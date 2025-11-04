@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Sken</title>
+  <style>body{font-family:sans-serif;padding:20px;max-width:640px;margin:auto}</style>
+</head>
+<body>
+  <div id="msg">Overujem…</div>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
+    import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
+    import { getFirestore, collection, query, where, orderBy, limit, getDocs, doc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
+
+    // PASTE YOUR FIREBASE WEB CONFIG HERE
+    const firebaseConfig = {
+      apiKey: "YOUR_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const msg = t => document.getElementById('msg').innerText = t;
+    const parish = new URLSearchParams(location.search).get('parish');
+    const ago = m => new Date(Date.now() - m*60*1000);
+
+    async function run(){
+      try{
+        if(!parish) return msg('Chýba identifikátor farnosti.');
+        await signInAnonymously(auth);
+        const uid = auth.currentUser.uid;
+
+        const q = query(
+          collection(db,'masses'),
+          where('parish_id','==', parish),
+          where('starts_at','>=', ago(60)),
+          orderBy('starts_at','asc'),
+          limit(1)
+        );
+        const snap = await getDocs(q);
+        if(snap.empty) return msg('Žiadna aktívna sv. omša.');
+
+        const mass = snap.docs[0];
+        const ref = doc(db,'checkins', `${uid}_${mass.id}`);
+        await setDoc(ref, {
+          user_id: uid,
+          mass_id: mass.id,
+          parish_id: parish,
+          scanned_at: serverTimestamp()
+        });
+
+        msg('✅ Zapísané. Ďakujeme za službu.');
+      }catch(e){
+        msg('❌ Neplatné alebo oneskorené.');
+      }
+    }
+    run();
+  </script>
+</body>
+</html>
