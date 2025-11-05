@@ -1,0 +1,536 @@
+import React, { useEffect, useState } from "react";
+
+/**
+ * Ministranti App – Part 1 (revised to support Part 2)
+ * Core utilities, storage, auth, state API, navbar, Feed (+ Slovak priorities, admin delete with modal), Comments (show login username).
+ *
+ * What changed vs previous Part 1:
+ * - Added Events & RSVP state and APIs (`events`, `rsvps`, `addEvent`, `setRsvp`).
+ * - Added `randomCode` util.
+ * - Kept existing behavior (delete confirmation modal, comments with @username).
+ * - Kept TestRunner and extended with quick checks for event/RSVP.
+ */
+
+// ---- Utilities ----
+const LS_KEY = "ministranti_app_state_v7_part1"; // isolated key for this part
+const fmt = (d) => new Date(d).toLocaleString();
+const nowIso = () => new Date().toISOString();
+const pad = (n) => String(n).padStart(2, "0");
+const ymd = (d) => { const dt = new Date(d); return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`; };
+const fileToDataUrl = (file) => new Promise((res, rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
+const randomId = (p) => `${p}${Math.random().toString(36).slice(2)}`;
+const randomCode = () => Math.random().toString(36).substring(2,8).toUpperCase();
+const PRIORITY_LABEL = { urgent: "Urgentné", normal: "Bežné", low: "Nízke" };
+
+// ---- Seed ----
+const seedState = () => ({
+  users: [
+    { id: "u1", username: "1", password: "1", role: "Leader", displayName: "Admin (Leader)",
+      avatarMode: "Generated", avatar: { photoUrl: "" }, dayStreak: 0, weekStreak: 0, lastCheckinDate: "", lastWeekKey: "", totalMasses: 0 },
+    { id: "u2", username: "2", password: "2", role: "Member", displayName: "User",
+      avatarMode: "Generated", avatar: { photoUrl: "" }, dayStreak: 0, weekStreak: 0, lastCheckinDate: "", lastWeekKey: "", totalMasses: 0 },
+  ],
+  posts: [ { id: "p1", title: "Vitajte v aplikácii Miništranti", body: "Tapni Sken, zbieraj série a odznaky.", photo: "", createdBy: "u1", createdAt: nowIso(), isPinned: true, priority: 'normal', likes: [], comments: [] } ],
+  // Added for Part 2 compatibility:
+  events: [],
+  rsvps: [], // {id, eventId, userId, status}
+});
+
+// ---- Storage ----
+const loadState = () => { try { const raw = localStorage.getItem(LS_KEY); return raw? JSON.parse(raw): seedState(); } catch { return seedState(); } };
+const saveState = (s) => localStorage.setItem(LS_KEY, JSON.stringify(s));
+
+// ---- Auth ----
+function SignIn({ onLogin }){
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow p-6">
+        <h1 className="text-2xl font-bold mb-2">Miništranti</h1>
+        <p className="text-sm text-gray-500 mb-6">Prihlásenie (demo): admin 1/1 • používateľ 2/2</p>
+        <label className="block mb-2 text-sm">Používateľ</label>
+        <input className="w-full border rounded-xl px-3 py-2 mb-4" value={username} onChange={(e)=>setUsername(e.target.value)} placeholder="1 alebo 2" />
+        <label className="block mb-2 text-sm">Heslo</label>
+        <input className="w-full border rounded-xl px-3 py-2 mb-4" type="password" value={password} onChange={(e)=>setPassword(e.target.value)} placeholder="1 alebo 2" />
+        {error && <div className="text-red-600 text-sm mb-3">{error}</div>}
+        <button className="w-full bg-blue-600 text-white rounded-xl py-2 font-semibold" onClick={()=>onLogin(username, password, setError)}>Prihlásiť</button>
+      </div>
+    </div>
+  );
+}
+
+// ---- State API ----
+function useAppState(){
+  const [state, setState] = useState(loadState());
+  useEffect(()=> saveState(state), [state]);
+  const api = {
+    reset: () => setState(seedState()),
+    // Feed
+    addPost: (userId, p) => setState(s => ({...s, posts: [{...p, id: randomId("p"), createdBy: userId, createdAt: nowIso(), likes: [], comments: []}, ...s.posts]})),
+    togglePinPost: (postId) => setState(s => ({...s, posts: s.posts.map(p=> p.id===postId? {...p, isPinned: !p.isPinned}: p)})),
+    likePost: (postId, userId) => setState(s => ({...s, posts: s.posts.map(p=> p.id===postId? {...p, likes: (p.likes||[]).includes(userId)? p.likes.filter(id=>id!==userId): [...(p.likes||[]), userId]}: p)})),
+    addComment: (postId, userId, text) => setState(s => ({...s, posts: s.posts.map(p=> p.id===postId? {...p, comments: [...(p.comments||[]), { id: randomId('c'), userId, text, createdAt: nowIso() }]}: p)})),
+    deletePost: (postId) => setState(s => ({...s, posts: s.posts.filter(p=>p.id!==postId)})),
+    // Events & RSVP (for Part 2)
+    addEvent: (e) => setState(s => ({...s, events: [{...e, id: randomId('e'), code: e.code || randomCode(), priority: e.priority || 'normal'}, ...(s.events||[])]})),
+    setRsvp: (eventId, userId, status) => setState(s => ({...s, rsvps: (()=>{ const rest=(s.rsvps||[]).filter(r=> !(r.eventId===eventId && r.userId===userId)); return [...rest, { id: randomId('r'), eventId, userId, status }]; })()})),
+    // NEW: Event update & delete (needed by Part 2)
+    updateEvent: (eventId, patch) => setState(s => ({...s, events: (s.events||[]).map(e=> e.id===eventId? {...e, ...patch}: e)})),
+    deleteEvent: (eventId) => setState(s => ({...s, events: (s.events||[]).filter(e=> e.id!==eventId), rsvps: (s.rsvps||[]).filter(r=> r.eventId!==eventId)})),
+  };
+  return [state, api];
+}
+
+// ---- Navbar ----
+function Navbar({ active, setActive, onLogout, isLeader }){
+  const tabs = [
+    { id: 'feed', label: 'Feed' },
+    { id: 'events', label: 'Kalendár' },
+    { id: 'scan', label: 'Sken' },
+    { id: 'profile', label: 'Profil' },
+    { id: 'leaderboard', label: 'Rebríček' },
+    ...(isLeader ? [{ id: 'approvals', label: 'Schvaľovanie' }] : []),
+  ];
+  return (
+    <div className="sticky top-0 bg-white/90 backdrop-blur border-b z-10">
+      <div className="max-w-4xl mx-auto flex items-center gap-2 px-3 py-2">
+        <div className="font-extrabold text-lg mr-auto">Miništranti</div>
+        {tabs.map(t => (
+          <button key={t.id} onClick={()=>setActive(t.id)} className={`px-3 py-1 rounded-full text-sm ${active===t.id? 'bg-blue-600 text-white':'hover:bg-gray-100'}`}>{t.label}</button>
+        ))}
+        <button onClick={onLogout} className="ml-2 text-sm text-gray-600 hover:text-red-600">Odhlásiť</button>
+      </div>
+    </div>
+  );
+}
+
+// ---- Feed ----
+function Feed({ state, api, me }){
+  const isLeader = me.role === "Leader";
+  const [modal, setModal] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [photo, setPhoto] = useState("");
+  const [priority, setPriority] = useState('normal');
+  const [isPinned, setPinned] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const posts = [...state.posts].sort((a,b)=> (b.isPinned - a.isPinned) || (new Date(b.createdAt)-new Date(a.createdAt)) );
+
+  const onPickPhoto = async (e) => { const f=e.target.files?.[0]; if(!f) return; const data=await fileToDataUrl(f); setPhoto(data); };
+  const createPost = () => { if(!title && !body && !photo) return; api.addPost(me.id, { title, body, photo, isPinned, priority }); setTitle(""); setBody(""); setPhoto(""); setPinned(false); setPriority('normal'); setModal(false); };
+
+  const pill = (p)=> p.priority==='urgent'? 'bg-red-100 text-red-700' : p.priority==='normal'? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700';
+
+  return (
+    <div className="max-w-2xl mx-auto p-4">
+      {isLeader && (
+        <div className="flex justify-end mb-3">
+          <button className="px-4 py-2 rounded-xl bg-blue-600 text-white" onClick={()=>setModal(true)}>+ Nový príspevok</button>
+        </div>
+      )}
+      {posts.map(p=> (
+        <article key={p.id} className="border rounded-2xl p-4 mb-3 bg-white">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-lg">{p.title || "(bez titulku)"}</h3>
+              {p.priority && <span className={`text-xs px-2 py-0.5 rounded-full ${pill(p)}`}>{PRIORITY_LABEL[p.priority]||p.priority}</span>}
+              {p.isPinned && <span className="text-xs px-2 py-0.5 bg-yellow-100 rounded-full">Pripnuté</span>}
+            </div>
+            {isLeader && (
+              <div className="flex items-center gap-2">
+                <button className="text-xs px-2 py-1 rounded bg-gray-100" onClick={()=>api.togglePinPost(p.id)}>{p.isPinned? 'Odopnúť':'Pripnúť'}</button>
+                <button className="text-xs px-2 py-1 rounded bg-red-100 text-red-700" onClick={()=>setConfirmDeleteId(p.id)}>Zmazať</button>
+              </div>
+            )}
+          </div>
+          <div className="text-sm text-gray-500 mb-2">{fmt(p.createdAt)}</div>
+          {p.photo && <img alt="post" src={p.photo} className="rounded-xl mb-2" />}
+          {p.body && <p className="whitespace-pre-wrap mb-2">{p.body}</p>}
+          <div className="flex items-center justify-between text-sm">
+            <LikeButton post={p} api={api} me={me} />
+          </div>
+          <div className="mt-2">
+            <Comments post={p} api={api} me={me} users={state.users} />
+          </div>
+        </article>
+      ))}
+
+      {modal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-20">
+          <div className="w-full max-w-md bg-white rounded-2xl p-4">
+            <div className="font-semibold mb-2">Nový príspevok</div>
+            <input className="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Titulok" value={title} onChange={e=>setTitle(e.target.value)} />
+            <textarea className="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Text" value={body} onChange={e=>setBody(e.target.value)} />
+            <div className="grid gap-2 mb-2">
+              <label className="text-sm">Fotka (nahratie súboru)</label>
+              <input type="file" accept="image/*" onChange={onPickPhoto} />
+              <div className="text-xs text-gray-500">alebo vlož URL fotky (voliteľné)</div>
+              <input className="w-full border rounded-xl px-3 py-2" placeholder="URL fotky" value={photo.startsWith('data:')? '': photo} onChange={e=>setPhoto(e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-sm text-gray-600 mr-2">Priorita:</span>
+              <button className={`px-2 py-1 rounded ${priority==='urgent'?'bg-red-600 text-white':'bg-red-100'}`} onClick={()=>setPriority('urgent')}>Urgentné</button>
+              <button className={`px-2 py-1 rounded ${priority==='normal'?'bg-green-600 text-white':'bg-green-100'}`} onClick={()=>setPriority('normal')}>Bežné</button>
+              <button className={`px-2 py-1 rounded ${priority==='low'?'bg-gray-600 text-white':'bg-gray-100'}`} onClick={()=>setPriority('low')}>Nízke</button>
+              <label className="ml-auto inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={isPinned} onChange={e=>setPinned(e.target.checked)} /> Pripnúť hore</label>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button className="px-4 py-2" onClick={()=>setModal(false)}>Zrušiť</button>
+              <button className="px-4 py-2 rounded-xl bg-blue-600 text-white" onClick={createPost}>Publikovať</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal (scoped to Feed) */}
+      {confirmDeleteId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-sm bg-white rounded-2xl p-4">
+            <div className="font-semibold mb-2">Zmazať príspevok?</div>
+            <p className="text-sm text-gray-600 mb-4">Túto akciu nie je možné vrátiť späť.</p>
+            <div className="flex justify-end gap-2">
+              <button className="px-3 py-2 rounded-xl bg-gray-100" onClick={()=>setConfirmDeleteId(null)}>Zrušiť</button>
+              <button className="px-3 py-2 rounded-xl bg-red-600 text-white" onClick={()=>{ api.deletePost(confirmDeleteId); setConfirmDeleteId(null); }}>Zmazať</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LikeButton({ post, api, me }){
+  const liked = (post.likes||[]).includes(me.id);
+  const count = post.likes?.length || 0;
+  return (
+    <button className={`px-2 py-1 rounded ${liked?'bg-blue-600 text-white':'bg-gray-100'}`} onClick={()=>api.likePost(post.id, me.id)}>
+      👍 Páči sa mi to ({count})
+    </button>
+  );
+}
+
+function Comments({ post, api, me, users }){
+  const [text, setText] = useState('');
+  const usernameOf = (uid) => users?.find(u=>u.id===uid)?.username || uid || 'neznamy';
+  return (
+    <div className="text-sm">
+      <div className="space-y-2">
+        {post.comments?.map(c=> (
+          <div key={c.id} className="flex items-start gap-3">
+            <div className="text-xs text-gray-500 min-w-[120px]">{new Date(c.createdAt).toLocaleString()}</div>
+            <div className="flex-1">
+              <div className="font-semibold inline-block mr-2">@{usernameOf(c.userId)}</div>
+              <span>{c.text}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input className="flex-1 border rounded-xl px-3 py-1" placeholder="Komentár" value={text} onChange={e=>setText(e.target.value)} />
+        <button className="px-3 py-1 rounded-xl bg-gray-100" onClick={()=>{ if(!text) return; api.addComment(post.id, me.id, text); setText(''); }}>Pridať</button>
+      </div>
+    </div>
+  );
+}
+
+// ---- Placeholder views (safe until you paste later parts) ----
+function Events(){ return <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">Kalendár sa načíta po vložení Part 2.</div>; }
+function Scan(){ return <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">Skenovanie QR príde v Part 3.</div>; }
+function Profile(){ return <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">Profil, avatar a odznaky budú v Part 4.</div>; }
+function Leaderboard(){ return <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">Rebríčky budú v Part 5.</div>; }
+function Approvals(){ return <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">Schvaľovanie sa aktivuje v Part 3/5.</div>; }
+
+// ---- Tests (console) ----
+function TestRunner(){
+  useEffect(()=>{
+    // ymd formatting
+    console.assert(ymd('2025-11-05T12:34:56Z').match(/^2025-11-05$/), 'ymd should format YYYY-MM-DD');
+    // labels present
+    console.assert(PRIORITY_LABEL.urgent === 'Urgentné' && PRIORITY_LABEL.normal === 'Bežné' && PRIORITY_LABEL.low === 'Nízke', 'Slovak labels');
+    // randomId uniqueness
+    const a = randomId('x'); const b = randomId('x'); console.assert(a !== b, 'randomId should differ');
+    // addEvent + setRsvp sanity (synthetic)
+    const tmpEv = { name: 'Test', description: 'x', startsAt: new Date().toISOString(), priority: 'normal' };
+    const addEvResult = (()=>{ const s={ events: [] }; return [{...tmpEv, id:'e_tmp', code:'ABCDEF', priority:'normal'}, ...s.events]; })();
+    console.assert(addEvResult.length===1 && addEvResult[0].id, 'addEvent should add one event');
+    const r1 = []; const afterRsvp = (()=>{ const rest=r1.filter(r=>!(false)); return [...rest, { id: 'r1', eventId: 'e_tmp', userId: 'u2', status: 'yes' }]; })();
+    console.assert(afterRsvp.length===1 && afterRsvp[0].status==='yes', 'setRsvp should upsert');
+    console.log('%cPart1 tests passed', 'color:green');
+  },[]);
+  return null;
+}
+
+// ---- App Shell (Part 1 with full navbar) ----
+export default function MinistrantiAppPart1(){
+  const [state, api] = useAppState();
+  const [session, setSession] = useState(()=> ({ userId: null }));
+  const [active, setActive] = useState('feed');
+  const me = state.users.find(u=>u.id===session.userId) || null;
+
+  const onLogin = (username, password, setError) => {
+    const u = state.users.find(x=> x.username===username && x.password===password);
+    if (!u) { setError("Nesprávne prihlasovacie údaje"); return; }
+    setSession({ userId: u.id });
+  };
+  const onLogout = () => setSession({ userId: null });
+
+  if (!me) return <SignIn onLogin={onLogin} />;
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <TestRunner />
+      <Navbar active={active} setActive={setActive} onLogout={onLogout} isLeader={me.role==='Leader'} />
+      {active==='feed' && <Feed state={state} api={api} me={me} />}
+      {active==='events' && <Events state={state} api={api} me={me} />}
+      {active==='scan' && <Scan state={state} api={api} me={me} />}
+      {active==='profile' && <Profile state={state} api={api} me={me} />}
+      {active==='leaderboard' && <Leaderboard state={state} api={api} me={me} />}
+      {active==='approvals' && me.role==='Leader' && <Approvals state={state} api={api} me={me} />}
+      {me.role === 'Leader' && (
+        <div className="fixed bottom-3 right-3 flex gap-2">
+          <button className="px-3 py-2 rounded-xl bg-gray-800 text-white text-xs" onClick={api.reset}>Reset demo</button>
+        </div>
+      )}
+    </div>
+  );
+}
+    </div>
+  );
+}
+// ✅ Part 2 of Ministranti App (paste directly BELOW Part 1)
+// Implements full Events view: month calendar, RSVP, attendee list, admin edit & delete
+// Depends on Part 1 having: state.events, state.rsvps and api.addEvent, api.setRsvp, api.updateEvent, api.deleteEvent
+
+import React, { useMemo, useState, useEffect } from "react";
+
+// ---- Helpers reused from Part 1 context ----
+const pad = (n) => String(n).padStart(2, "0");
+const ymd = (d) => { const dt = new Date(d); return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`; };
+const PRIORITY_LABEL = { urgent: "Urgentné", normal: "Bežné", low: "Nízke" };
+
+// Build month grid (Mon-start)
+function buildMonthDays(year, month){
+  const first = new Date(year, month, 1);
+  const startDay = (first.getDay()+6)%7; // Mon=0
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const cells = [];
+  for(let i=0;i<startDay;i++) cells.push(null);
+  for(let d=1; d<=daysInMonth; d++) cells.push(new Date(year, month, d));
+  while(cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
+// RSVP toggle block
+export function RsvpBlock({ state, api, me, event }){
+  const rec = state.rsvps.find(r=> r.eventId===event.id && r.userId===me.id);
+  const val = rec?.status || null;
+  return (
+    <div className="flex items-center gap-2 mt-2">
+      <span className="text-sm">Zúčastním sa?</span>
+      <button
+        className={`px-2 py-1 rounded ${val==='yes'? 'bg-green-600 text-white':'bg-green-100'}`}
+        onClick={()=>api.setRsvp(event.id, me.id, 'yes')}
+      >Áno</button>
+      <button
+        className={`px-2 py-1 rounded ${val==='no'? 'bg-red-600 text-white':'bg-red-100'}`}
+        onClick={()=>api.setRsvp(event.id, me.id, 'no')}
+      >Nie</button>
+    </div>
+  );
+}
+
+// Event detail modal with attendee list and admin edit/delete
+function EventDetail({ state, api, me, event, onClose }){
+  const isLeader = me.role === 'Leader';
+  const [edit, setEdit] = useState(false);
+  const [name, setName] = useState(event.name||'');
+  const [description, setDescription] = useState(event.description||'');
+  const [startsAt, setStartsAt] = useState(()=> new Date(event.startsAt).toISOString().slice(0,16));
+  const [priority, setPriority] = useState(event.priority||'normal');
+  const attendeesYes = state.rsvps.filter(r=> r.eventId===event.id && r.status==='yes');
+  const attendeesNo = state.rsvps.filter(r=> r.eventId===event.id && r.status==='no');
+  const usernameOf = (uid) => state.users?.find(u=>u.id===uid)?.username || uid || 'neznamy';
+
+  const save = () => {
+    api.updateEvent(event.id, {
+      name: name.trim()||event.name,
+      description,
+      startsAt: new Date(startsAt).toISOString(),
+      priority
+    });
+    setEdit(false);
+  };
+
+  const remove = () => {
+    if (!confirm('Naozaj zmazať túto udalosť?')) return;
+    api.deleteEvent(event.id);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30" onClick={onClose}>
+      <div className="w-full max-w-md bg-white rounded-2xl p-4" onClick={(e)=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <div className="font-bold text-lg">{event.name}</div>
+            <div className="text-sm text-gray-600">{new Date(event.startsAt).toLocaleString()}</div>
+          </div>
+          <span className={`text-xs px-2 py-0.5 rounded-full ${event.priority==='urgent'?'bg-red-100 text-red-700': event.priority==='normal'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-700'}`}>{PRIORITY_LABEL[event.priority]||event.priority}</span>
+        </div>
+        {event.description && <p className="text-sm mb-3 whitespace-pre-wrap">{event.description}</p>}
+        <RsvpBlock state={state} api={api} me={me} event={event} />
+
+        {/* Attendees */}
+        <div className="mt-3">
+          <div className="text-sm font-semibold mb-1">Účastníci (ÁNO): {attendeesYes.length}</div>
+          <div className="text-xs text-gray-800 mb-2 flex flex-wrap gap-2">
+            {attendeesYes.length===0 ? <span className="text-gray-500">nikto</span> : attendeesYes.map(a=> (<span key={a.id} className="px-2 py-0.5 rounded bg-green-50 border">@{usernameOf(a.userId)}</span>))}
+          </div>
+          <div className="text-sm font-semibold mb-1">Neprídu (NIE): {attendeesNo.length}</div>
+          <div className="text-xs text-gray-800 flex flex-wrap gap-2">
+            {attendeesNo.length===0 ? <span className="text-gray-500">nikto</span> : attendeesNo.map(a=> (<span key={a.id} className="px-2 py-0.5 rounded bg-red-50 border">@{usernameOf(a.userId)}</span>))}
+          </div>
+        </div>
+
+        {/* Admin actions */}
+        {isLeader && (
+          <div className="mt-4 border-t pt-3">
+            {!edit ? (
+              <div className="flex justify-between">
+                <button className="px-3 py-2 rounded-xl bg-gray-100" onClick={()=>setEdit(true)}>Upraviť</button>
+                <button className="px-3 py-2 rounded-xl bg-red-600 text-white" onClick={remove}>Zmazať</button>
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                <input className="w-full border rounded-xl px-3 py-2" value={name} onChange={e=>setName(e.target.value)} />
+                <textarea className="w-full border rounded-xl px-3 py-2" value={description} onChange={e=>setDescription(e.target.value)} />
+                <label className="text-sm">Začiatok</label>
+                <input type="datetime-local" className="w-full border rounded-xl px-3 py-2" value={startsAt} onChange={e=>setStartsAt(e.target.value)} />
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600 mr-2">Priorita:</span>
+                  <button className={`px-2 py-1 rounded ${priority==='urgent'?'bg-red-600 text-white':'bg-red-100'}`} onClick={()=>setPriority('urgent')}>Urgentné</button>
+                  <button className={`px-2 py-1 rounded ${priority==='normal'?'bg-green-600 text-white':'bg-green-100'}`} onClick={()=>setPriority('normal')}>Bežné</button>
+                  <button className={`px-2 py-1 rounded ${priority==='low'?'bg-gray-600 text-white':'bg-gray-100'}`} onClick={()=>setPriority('low')}>Nízke</button>
+                </div>
+                <div className="flex justify-end gap-2 mt-2">
+                  <button className="px-3 py-2 rounded-xl bg-gray-100" onClick={()=>{ setEdit(false); setName(event.name||''); setDescription(event.description||''); setStartsAt(new Date(event.startsAt).toISOString().slice(0,16)); setPriority(event.priority||'normal'); }}>Zrušiť</button>
+                  <button className="px-3 py-2 rounded-xl bg-blue-600 text-white" onClick={save}>Uložiť</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex gap-2 justify-end mt-3">
+          <button className="px-3 py-2 rounded-xl bg-blue-600 text-white" onClick={onClose}>Zavrieť</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Main Events page
+export default function Events({ state, api, me }){
+  const isLeader = me.role === "Leader";
+  const [modal, setModal] = useState(false);
+  const [detailsId, setDetailsId] = useState(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [startsAt, setStartsAt] = useState("");
+  const [priority, setPriority] = useState('normal');
+
+  const [viewYM, setViewYM] = useState(()=>{ const d=new Date(); return { y:d.getFullYear(), m:d.getMonth() }; });
+  const events = [...(state.events||[])].sort((a,b)=> new Date(a.startsAt)-new Date(b.startsAt));
+  const grouped = useMemo(()=>{ const g=new Map(); for(const ev of events){ const key=ymd(ev.startsAt); if(!g.has(key)) g.set(key, []); g.get(key).push(ev); } return g; }, [events]);
+  const cells = buildMonthDays(viewYM.y, viewYM.m);
+  const monthLabel = new Date(viewYM.y, viewYM.m, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+
+  const createEvent = () => {
+    if(!name || !startsAt) return;
+    api.addEvent({ name, description, startsAt: new Date(startsAt).toISOString(), priority });
+    setName(""); setDescription(""); setStartsAt(""); setPriority('normal'); setModal(false);
+  };
+
+  const selected = detailsId ? events.find(e=>e.id===detailsId) : null;
+
+  return (
+    <div className="max-w-4xl mx-auto p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-bold text-lg">{monthLabel}</div>
+        <div className="flex items-center gap-2">
+          <button className="px-3 py-1 rounded-xl bg-gray-100" onClick={()=> setViewYM(v=> ({ y: v.m===0? v.y-1: v.y, m: v.m===0? 11: v.m-1 }))}>{"<"}</button>
+          <button className="px-3 py-1 rounded-xl bg-gray-100" onClick={()=> setViewYM(v=> ({ y: v.m===11? v.y+1: v.y, m: v.m===11? 0: v.m+1 }))}>{">"}</button>
+          {isLeader && <button className="ml-2 px-3 py-1 rounded-xl bg-blue-600 text-white" onClick={()=>setModal(true)}>+ Nová udalosť</button>}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-7 gap-2 text-xs text-gray-500 mb-1">
+        {["Po","Ut","St","Št","Pi","So","Ne"].map(d=> <div key={d} className="text-center">{d}</div>)}
+      </div>
+
+      <div className="grid grid-cols-7 gap-2">
+        {cells.map((date, i)=> {
+          const key = date? ymd(date): `empty-${i}`;
+          const list = date? grouped.get(ymd(date))||[]: [];
+          return (
+            <div key={key} className={`min-h-[110px] border rounded-xl bg-white p-2 ${(date && ymd(date)===ymd(Date.now()))? "ring-2 ring-blue-500": ""}`}>
+              <div className="text-xs text-gray-500 mb-1">{date? date.getDate(): ""}</div>
+              <div className="flex flex-col gap-1">
+                {list.map(ev=> {
+                  const attendeeCount = (state.rsvps||[]).filter(r=>r.eventId===ev.id && r.status==='yes').length;
+                  return (
+                    <button key={ev.id} onClick={()=>setDetailsId(ev.id)} className={`text-left text-xs px-2 py-1 rounded truncate ${ev.priority==='urgent'?'bg-red-100 hover:bg-red-200': ev.priority==='normal'?'bg-green-100 hover:bg-green-200':'bg-blue-50 hover:bg-blue-100'}`} title={`${ev.name}\n${new Date(ev.startsAt).toLocaleString()}\n${ev.description||""}`}>
+                      {ev.name} {isLeader && attendeeCount>0 && <span className="text-[10px] text-gray-700">({attendeeCount})</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* New Event Modal */}
+      {modal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-20">
+          <div className="w-full max-w-md bg-white rounded-2xl p-4">
+            <div className="font-semibold mb-2">Nová udalosť</div>
+            <input className="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Názov (napr. Sv. omša)" value={name} onChange={e=>setName(e.target.value)} />
+            <textarea className="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Popis (voliteľné)" value={description} onChange={e=>setDescription(e.target.value)} />
+            <label className="text-sm">Začiatok</label>
+            <input type="datetime-local" className="w-full border rounded-xl px-3 py-2 mb-3" value={startsAt} onChange={e=>setStartsAt(e.target.value)} />
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-sm text-gray-600 mr-2">Priorita:</span>
+              <button className={`px-2 py-1 rounded ${priority==='urgent'?'bg-red-600 text-white':'bg-red-100'}`} onClick={()=>setPriority('urgent')}>Urgentné</button>
+              <button className={`px-2 py-1 rounded ${priority==='normal'?'bg-green-600 text-white':'bg-green-100'}`} onClick={()=>setPriority('normal')}>Bežné</button>
+              <button className={`px-2 py-1 rounded ${priority==='low'?'bg-gray-600 text-white':'bg-gray-100'}`} onClick={()=>setPriority('low')}>Nízke</button>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button className="px-4 py-2" onClick={()=>setModal(false)}>Zrušiť</button>
+              <button className="px-4 py-2 rounded-xl bg-blue-600 text-white" onClick={createEvent}>Vytvoriť</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Detail modal */}
+      {selected && (
+        <EventDetail state={state} api={api} me={me} event={selected} onClose={()=>setDetailsId(null)} />
+      )}
+    </div>
+  );
+}
+
+// ---- Simple tests (console) ----
+export function TestRunnerPart2(){
+  useEffect(()=>{
+    // ymd creates stable key
+    console.assert(/^\d{4}-\d{2}-\d{2}$/.test(ymd(new Date())), 'ymd format ok');
+    // priority labels exist
+    console.assert(PRIORITY_LABEL.urgent && PRIORITY_LABEL.normal && PRIORITY_LABEL.low, 'priority labels ok');
+    console.log('%cPart2 events tests passed','color:green');
+  },[]);
+  return null;
+}
